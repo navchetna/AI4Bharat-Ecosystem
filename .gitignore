@@ -1,0 +1,5 @@
+.venv
+install-deps.sh
+IndicTransTokenizer/
+*.json
+IndicTransToolkit/

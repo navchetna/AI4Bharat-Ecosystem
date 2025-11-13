@@ -1,0 +1,3 @@
+transformers==4.50.0
+sentencepiece==0.2.1
+setuptools==80.9.0
