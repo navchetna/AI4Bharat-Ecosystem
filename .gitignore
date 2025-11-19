@@ -3,3 +3,4 @@ install-deps.sh
 IndicTransTokenizer/
 *.json
 IndicTransToolkit/
+*.pt

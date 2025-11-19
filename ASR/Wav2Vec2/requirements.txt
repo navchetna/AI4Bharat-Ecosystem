@@ -1,3 +1,4 @@
 librosa
 soundfile
-transformers==4.50.4
+transformers==4.50.2
+fairseq==0.12.2
