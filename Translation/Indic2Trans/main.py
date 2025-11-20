@@ -109,7 +109,8 @@ class IndicTranslator:
         src_lang, tgt_lang = "hin_Deva", "ben_Beng"
         _ = self.batch_translate(sample_hi_sents, src_lang, tgt_lang)
         self.pre_print("Warmup finished!")
-    
+
+  
 # Example usage
 if __name__ == "__main__":
     import argparse
