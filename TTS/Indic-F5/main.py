@@ -41,7 +41,7 @@ if __name__ == "__main__":
         audio, _ = model.generate_audio(args.text, args.ref_audio, args.warmup_text)
         
     audio, total_time = model.generate_audio(args.text, args.ref_audio, args.ref_text)
-
+    print("Total Audio Generation time: {:.2f} seconds".format(total_time))
     if args.output_path:
         # Normalize and save output
         if audio.dtype == np.int16:
