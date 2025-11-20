@@ -1,7 +1,0 @@
-librosa
-soundfile
-transformers==4.38.2 
-fastapi
-uvicorn
-pydantic
-requests
