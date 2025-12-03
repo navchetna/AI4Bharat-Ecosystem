@@ -4,3 +4,5 @@ IndicTransTokenizer/
 *.json
 IndicTransToolkit/
 *.pt
+Fastspeech2_HS
+parler-tts
