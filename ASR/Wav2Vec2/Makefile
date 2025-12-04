@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 setup:
-	sudo apt-get install sox libsox-fmt-all g++ -y
+	sudo apt-get install sox libsox-fmt-all libsox-dev g++ -y
 	export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH
 	uv venv --python=3.10
 	@if [ ! -f "hindi.pt" ]; then \
