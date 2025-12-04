@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 setup:
-	sudo apt-get install sox libsox-fmt-all -y
+	sudo apt-get install sox libsox-fmt-all g++ -y
 	export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH
 	uv venv --python=3.10
 	@if [ ! -f "hindi.pt" ]; then \
@@ -11,7 +11,7 @@ setup:
 		echo "hindi.pt already exists → skipping"; \
 	fi
 	. .venv/bin/activate && uv pip install torch==2.8.0 torchaudio==2.8.0 --torch-backend=cpu
-	. .venv/bin/activate && uv pip install -r requirements.txt
+	. .venv/bin/activate && uv pip install git+https://github.com/facebookresearch/fairseq.git@v0.12.1 && uv pip install -r requirements.txt
 
 cleanup:
 	sudo rm -r .venv
