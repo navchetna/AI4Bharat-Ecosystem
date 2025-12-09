@@ -218,6 +218,30 @@ class Text2SpeechApp:
         time_taken = time.time() - start
 
         return time_taken, output_file
+    
+
+    def generate_audio_bytes(self, text: str, speaker_gender="male"):
+            preprocessed_text, _ = self.preprocessor.preprocess(
+                text, self.lang, speaker_gender)
+            preprocessed_text = " ".join(preprocessed_text)
+
+            with torch.no_grad():
+                # Generate mel-spectrograms
+                out = self.fastspeech2_model[speaker_gender](preprocessed_text,
+                                             decode_conf={"alpha": self.alpha})
+
+                x = out["feat_gen_denorm"].T.unsqueeze(0) * 2.3262
+
+                # Convert mel-spectrograms to raw audio waveforms
+                y_g_hat = self.vocoder_model[speaker_gender](x)
+
+            audio = y_g_hat.squeeze()
+
+            audio = audio * MAX_WAV_VALUE
+            audio = audio.cpu().numpy().astype('int16')
+            
+            return audio
+
 
     def save_to_files(self, byte_ios, file_prefix: str) -> list[str]:
         file_paths = []
@@ -251,6 +275,9 @@ if __name__ == "__main__":
     language = "hindi"
     alpha = 1
     tts = Text2SpeechApp(batch_size=batch_size, alpha=alpha, language=language)
-    result = tts.batch_convert_and_save(input_sentences=[
-                                        "क्या हुआ तेरा वादा ?" for i in range(batch_size)], output_file_dir=f"./sample_outputs")
-    print(result)
+    st = time.perf_counter()
+    result = tts.generate_audio_bytes(text="भारत एक विविधताओं से भरा महान देश है, जहाँ अनेक संस्कृतियाँ, भाषाएँ और परंपराएँ आपस में मिलकर एक अद्भुत एकता का निर्माण करती हैं।")
+    print("Time: ", time.perf_counter() - st)
+
+    # Optional - Save the audio file
+    write("sample_output.wav", SAMPLING_RATE, result)
