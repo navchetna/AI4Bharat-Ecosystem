@@ -5,7 +5,7 @@ import json
 import torch
 import yaml
 import sys
-from utilities import logger, SAMPLING_RATE, WARMUP_PARAGRAPHS
+from utilities import SAMPLING_RATE, WARMUP_PARAGRAPHS
 from datetime import datetime
 import os
 import time
@@ -82,7 +82,7 @@ def load_fastspeech2_model(language: str, gender: str, device: str):
 
     model = Text2Speech(train_config=config_path, model_file=tts_model_path, device=device, vocoder_config=None,vocoder_file=None)
     model.vocoder=None 
-    model.model = torch.compile(model.model, backend="hpu_backend")
+    # model.model = torch.compile(model.model, backend="ipex")
     return model
 
 
@@ -115,12 +115,12 @@ class Text2SpeechApp:
             try:
                 self.vocoder_model[gender] = load_hifigan_vocoder(
                     f"{language}_latest", gender, device)
-                logger.debug(
+                print(
                     f"Loaded HiFi-GAN vocoder for {language}-{gender}")
 
                 self.fastspeech2_model[gender] = load_fastspeech2_model(
                     f"{language}_latest", gender, device)
-                logger.debug(
+                print(
                     f"Loaded FastSpeech2 model for {language}-{gender}")
                 self.supported_genders.append(gender)
             except FileNotFoundError as e:
@@ -132,9 +132,9 @@ class Text2SpeechApp:
         self.warmup()
 
     def pre_print(self, print_str: str):
-        logger.debug("=================================================")
-        logger.debug(print_str)
-        logger.debug("=================================================")
+        print("=================================================")
+        print(print_str)
+        print("=================================================")
 
     def warmup(self):
         self.pre_print("TTS Warming up!")
@@ -143,46 +143,46 @@ class Text2SpeechApp:
         text = WARMUP_PARAGRAPHS.get(lang)
 
         if not text:
-            logger.warning(f"No warmup paragraph available for language: {lang}")
+            print(f"No warmup paragraph available for language: {lang}")
             return
 
         # Ensure warmup output directory exists
         output_dir = "./warmup_outputs"
         os.makedirs(output_dir, exist_ok=True)
 
-        logger.debug(f"Running warmup for language: {lang}")
-        logger.debug(f"Warmup text length: {len(text.split())} words")
+        print(f"Running warmup for language: {lang}")
+        print(f"Warmup text length: {len(text.split())} words")
 
         total_start_time = time.time()
 
         for gender in ["male", "female"]:
             if gender not in self.fastspeech2_model:
-                logger.debug(f"Skipping warmup for {gender} - model not loaded.")
+                print(f"Skipping warmup for {gender} - model not loaded.")
                 continue
 
-            logger.debug(f"Starting warmup for {lang}-{gender}")
+            print(f"Starting warmup for {lang}-{gender}")
             try:
                 gender_start_time = time.time()
                 for i in range(2):  # Run twice; adjust as needed
-                    logger.debug(f"Warmup iteration {i + 1} for {gender}")
+                    print(f"Warmup iteration {i + 1} for {gender}")
                     time_taken, _ = self.convert_and_save(
                         text=text,
                         speaker_gender=gender,
                         output_file_dir=output_dir
                     )
-                    logger.debug(f"Iteration {i + 1} for {gender} completed in {time_taken:.2f} seconds")
+                    print(f"Iteration {i + 1} for {gender} completed in {time_taken:.2f} seconds")
                 gender_total_time = time.time() - gender_start_time
-                logger.debug(f"Total warmup time for {gender}: {gender_total_time:.2f} seconds")
+                print(f"Total warmup time for {gender}: {gender_total_time:.2f} seconds")
             except Exception as e:
-                logger.error(f"Warmup failed for {lang}-{gender}: {e}")
+                print(f"Warmup failed for {lang}-{gender}: {e}")
 
         total_time = time.time() - total_start_time
-        logger.info(f"Total TTS warmup completed in {total_time:.2f} seconds")
+        print(f"Total TTS warmup completed in {total_time:.2f} seconds")
         self.pre_print("TTS Warming finished!")
 
     def save_to_file(self, audio_arr, file_path):
         write(file_path, SAMPLING_RATE, audio_arr)
-        logger.debug(f"Audio saved to {file_path}")
+        print(f"Audio saved to {file_path}")
 
     def convert_and_save(self, text: str, speaker_gender="male", output_file_dir: str = "./outputs"):
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -236,11 +236,11 @@ class Text2SpeechApp:
         total_sentences = len(input_sentences)
         os.makedirs(output_file_dir, exist_ok=True)
 
-        logger.debug(f"Total T2S to be done: {total_sentences}\n")
+        print(f"Total T2S to be done: {total_sentences}\n")
         combined_para = ''.join(input_sentences)
         paragraph_time, output_path = self.convert_and_save(
             combined_para, speaker_gender=speaker_gender, output_file_dir=output_file_dir)
-        logger.debug(f"Paragraph Time: {paragraph_time}\n")
+        print(f"Paragraph Time: {paragraph_time}\n")
         output_file_paths.append(output_path)
 
         time_taken = time.time() - start_time
@@ -248,9 +248,9 @@ class Text2SpeechApp:
 
 if __name__ == "__main__":
     batch_size = 1
-    language = "punjabi"
+    language = "hindi"
     alpha = 1
     tts = Text2SpeechApp(batch_size=batch_size, alpha=alpha, language=language)
     result = tts.batch_convert_and_save(input_sentences=[
-                                        "ਮੇਰਾ ਨਾਮ ਰਿਤਿਕ ਹੈ।" for i in range(batch_size)], output_file_dir=f"./sample_outputs")
+                                        "क्या हुआ तेरा वादा ?" for i in range(batch_size)], output_file_dir=f"./sample_outputs")
     print(result)
