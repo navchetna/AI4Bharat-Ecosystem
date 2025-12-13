@@ -91,7 +91,26 @@ To run the FastSpeech2_HS model for inference, use the following command:
    ```
 2. Run the inference script with the desired text input:
    ```bash
-   python main.py
+   python main.py --dtype bfloat16
+
+   OR 
+
+   python mian.py --dtype float32
+   ```
+
+
+## Evaluate
+To evaluate the FastSpeech2_HS model, use the following command:
+- Evaluated on the stored audio files in the respective directories.
+   ```bash
+   python evaluate.py --audios_dir_1 ./audios_bfloat16/audio_files/ --audios_dir_2 ./audios_float32/audio_files/
+   ```
+
+OR 
+
+- Evaluate on the numpy files stored in the respective directories.
+   ```bash
+   python evaluate.py --audios_dir_1 ./audios_bfloat16/numpy_files/ --audios_dir_2 ./audios_float32/numpy_files/
    ```
 
 

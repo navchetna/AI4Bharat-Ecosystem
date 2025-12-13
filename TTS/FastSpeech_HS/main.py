@@ -1,6 +1,7 @@
 from text_preprocess_for_inference import TTSDurAlignPreprocessor, CharTextPreprocessor, TTSPreprocessor
 from espnet2.bin.tts_inference import Text2Speech
 from scipy.io.wavfile import write
+from viztracer import VizTracer
 import json
 import torch
 import yaml
@@ -21,7 +22,8 @@ nltk.download('averaged_perceptron_tagger_eng')
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def load_hifigan_vocoder(language: str, gender: str, device: str):
+
+def load_hifigan_vocoder(language: str, gender: str, device: str, dtype: str = "float32"):
     """
     Loads HiFi-GAN vocoder configuration file and generator model.
     """
@@ -43,10 +45,14 @@ def load_hifigan_vocoder(language: str, gender: str, device: str):
     generator.load_state_dict(state_dict_g['generator'])
     generator.eval()
     generator.remove_weight_norm()
+
+    if dtype == "bfloat16":
+        generator = generator.to(torch.bfloat16)
+
     return generator
 
 
-def load_fastspeech2_model(language: str, gender: str, device: str):
+def load_fastspeech2_model(language: str, gender: str, device: str, dtype: str = "float32"):
     """
     Loads FastSpeech2 model and updates its configuration with absolute paths.
     """
@@ -81,7 +87,10 @@ def load_fastspeech2_model(language: str, gender: str, device: str):
         yaml.dump(config, file)
 
     model = Text2Speech(train_config=config_path, model_file=tts_model_path, device=device, vocoder_config=None,vocoder_file=None)
-    model.vocoder=None 
+    model.vocoder=None
+    
+    if dtype == "bfloat16":
+        model.model = model.model.to(torch.bfloat16)
     # model.model = torch.compile(model.model, backend="ipex")
     return model
 
@@ -95,31 +104,27 @@ def split_into_chunks(text: str, words_per_chunk: int = 100):
 
 
 class Text2SpeechApp:
-    def __init__(self, language: str, batch_size: str = 1, alpha: float = 1):
+    def __init__(self, language: str, batch_size: str = 1, alpha: float = 1, dtype: str = "bfloat16"):
         self.alpha = alpha
         self.lang = language
         self.batch_size = batch_size
+        self.dtype = dtype
         self.vocoder_model = {}
         self.fastspeech2_model = {}
         self.supported_genders = []
         
-        # if language == "urdu" or language == "punjabi":
-        #     self.preprocessor = CharTextPreprocessor()
-        # elif language == "english":
-        #     self.preprocessor = TTSPreprocessor()
-        # else:
         self.preprocessor = TTSDurAlignPreprocessor()
 
         genders = ["male", "female"]
         for gender in genders:
             try:
                 self.vocoder_model[gender] = load_hifigan_vocoder(
-                    f"{language}_latest", gender, device)
+                    f"{language}_latest", gender, device, self.dtype)
                 print(
                     f"Loaded HiFi-GAN vocoder for {language}-{gender}")
 
                 self.fastspeech2_model[gender] = load_fastspeech2_model(
-                    f"{language}_latest", gender, device)
+                    f"{language}_latest", gender, device, self.dtype)
                 print(
                     f"Loaded FastSpeech2 model for {language}-{gender}")
                 self.supported_genders.append(gender)
@@ -204,14 +209,15 @@ class Text2SpeechApp:
                                              decode_conf={"alpha": self.alpha})
 
                 x = out["feat_gen_denorm"].T.unsqueeze(0) * 2.3262
-                x = x.to(device)
 
                 # Convert mel-spectrograms to raw audio waveforms
                 y_g_hat = self.vocoder_model[speaker_gender](x)
                 audio = y_g_hat.squeeze()
+
                 audio = audio * MAX_WAV_VALUE
-                audio = audio.cpu().numpy().astype('int16')
-                audio_arr.append(audio)
+            
+            audio = audio.numpy().astype('int16')
+            audio_arr.append(audio)
 
         result_array = np.concatenate(audio_arr, axis=0)
         self.save_to_file(audio_arr=result_array, file_path=output_file)
@@ -220,7 +226,7 @@ class Text2SpeechApp:
         return time_taken, output_file
     
 
-    def generate_audio_bytes(self, text: str, speaker_gender="male"):
+    def generate_audio_bytes(self, text: str, speaker_gender="male", save_file: bool = False):
             preprocessed_text, _ = self.preprocessor.preprocess(
                 text, self.lang, speaker_gender)
             preprocessed_text = " ".join(preprocessed_text)
@@ -235,12 +241,39 @@ class Text2SpeechApp:
                 # Convert mel-spectrograms to raw audio waveforms
                 y_g_hat = self.vocoder_model[speaker_gender](x)
 
-            audio = y_g_hat.squeeze()
+                audio = y_g_hat.squeeze()
 
-            audio = audio * MAX_WAV_VALUE
-            audio = audio.cpu().numpy().astype('int16')
-            
+                audio = audio * MAX_WAV_VALUE
+
             return audio
+    
+
+    def evaluate_performance(self, input_sentences: list, save_file: bool = False):
+        total_sentences = len(input_sentences)
+        print(f"\nTotal T2S to be done: {total_sentences}\n")
+        for i, sentence in enumerate(input_sentences):
+            start_time = time.perf_counter()
+            audio = self.generate_audio_bytes(text=sentence)
+            time_taken = time.perf_counter() - start_time
+
+            if save_file:
+                os.makedirs(f"audios_{self.dtype}/numpy_files", exist_ok=True)
+                os.makedirs(f"audios_{self.dtype}/audio_files", exist_ok=True)
+
+                output_file = f"audios_{self.dtype}/numpy_files/file_{i}.npy"
+
+                if audio.dtype == torch.bfloat16:
+                    audio = audio.to(torch.float32)
+                    
+                audio = audio.numpy().astype('int16')
+                np.save(output_file, audio)
+
+                audio_file_path = f"audios_{self.dtype}/audio_files/file_{i}.wav"
+                with open(audio_file_path, "wb") as f:    
+                    write(f, SAMPLING_RATE, audio)
+                print(f"Audio saved to {audio_file_path}") 
+                       
+        return time_taken
 
 
     def save_to_files(self, byte_ios, file_prefix: str) -> list[str]:
@@ -271,13 +304,29 @@ class Text2SpeechApp:
         return time_taken, output_file_paths
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Text to Speech benchmarking")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for TTS inference")
+    parser.add_argument("--language", type=str, default="hindi", help="Language for TTS")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Alpha value for FastSpeech2 decoding")
+    parser.add_argument("--dtype", type=str, default="float32", help="Data type for model inference")
+    args = parser.parse_args()
+
     batch_size = 1
     language = "hindi"
     alpha = 1
-    tts = Text2SpeechApp(batch_size=batch_size, alpha=alpha, language=language)
+    tts = Text2SpeechApp(batch_size=batch_size, alpha=alpha, language=language, dtype=args.dtype)
     st = time.perf_counter()
-    result = tts.generate_audio_bytes(text="भारत एक विविधताओं से भरा महान देश है, जहाँ अनेक संस्कृतियाँ, भाषाएँ और परंपराएँ आपस में मिलकर एक अद्भुत एकता का निर्माण करती हैं।")
-    print("Time: ", time.perf_counter() - st)
+    texts = [
+        "जीवन में सफलता पाने के लिए केवल सपने देखना ही नहीं, बल्कि उन्हें पूरा करने के लिए निरंतर प्रयास और आत्मविश्वास भी ज़रूरी होता है।",
+        "कठिन परिस्थितियाँ हमें तोड़ने नहीं आतीं, बल्कि हमें मज़बूत बनाकर जीवन के असली अर्थ से परिचित कराती हैं।",
+        # "जो व्यक्ति समय का सम्मान करता है, समय भी उसके जीवन को सही दिशा और उज्ज्वल भविष्य देता है।", # Error:  index 315 is out of bounds for dimension 0 with size 315
+        "सकारात्मक सोच और सही दृष्टिकोण के साथ किया गया हर छोटा प्रयास भी एक दिन बड़ी उपलब्धि में बदल जाता है।",
+        "जब हम निस्वार्थ भाव से दूसरों की मदद करते हैं, तब हमारे अपने जीवन में भी शांति और संतुलन अपने आप आ जाता है।"
+    ]
 
-    # Optional - Save the audio file
-    write("sample_output.wav", SAMPLING_RATE, result)
+    total_time = tts.evaluate_performance(texts, save_file=True)
+    et = time.perf_counter()
+    print(f"Total time for evaluating {len(texts)} sentences: {et - st:.2f} seconds")
+    print(f"Average time per sentence: {(et - st)/len(texts):.2f} seconds")
