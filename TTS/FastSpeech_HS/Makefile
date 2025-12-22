@@ -4,12 +4,10 @@ SHELL := /bin/bash
 setup:
 	uv venv --python=3.10 && \
 	source .venv/bin/activate && \
-	git clone -b New-Models https://github.com/smtiitm/Fastspeech2_HS && \
 	uv pip install torch==2.8.0 torchaudio==2.8.0 --torch-backend=cpu && \
-	uv pip install -r requirements.txt && cp main.py Fastspeech2_HS && cp utilities.py Fastspeech2_HS && cd Fastspeech2_HS && \
-	git checkout fc0608416a0f88f7b85dab05fe7e8425f125b802 && \
-	git lfs fetch --all && \
-	git lfs pull 
+	git clone https://huggingface.co/smtiitm/FastSpeech2_HS_latest_models Fastspeech2_HS && \
+	uv pip install -r requirements.txt && \
+	cp main.py Fastspeech2_HS && cp utilities.py Fastspeech2_HS && cd Fastspeech2_HS
 
 
 cleanup:

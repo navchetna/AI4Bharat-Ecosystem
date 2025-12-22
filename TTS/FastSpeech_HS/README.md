@@ -20,9 +20,9 @@
 
     pip install -r requirements.txt
     ```
-4. Clone the repository:
+4. Clone the repository and download the models:
     ```bash
-    git clone -b New-Models https://github.com/smtiitm/Fastspeech2_HS
+    git clone https://huggingface.co/smtiitm/FastSpeech2_HS_latest_models Fastspeech2_HS
     ```
 
 5. Copy all the files from the cloned repository to the current directory:
@@ -30,13 +30,6 @@
     cp -r *.py Fastspeech2_HS/
     ```
 
-6. Download the pretrained models
-    ```bash
-    cd Fastspeech2_HS && \
-    git checkout && \ fc0608416a0f88f7b85dab05fe7e8425f125b802 && \
-	git lfs fetch --all && \
-    git lfs checkout
-    ```
 
 #### Option 2 - Using Makefile
 

@@ -6,3 +6,4 @@ IndicTransToolkit/
 *.pt
 Fastspeech2_HS
 parler-tts
+torch_compile_debug
