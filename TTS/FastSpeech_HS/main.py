@@ -20,7 +20,15 @@ from hifigan.meldataset import MAX_WAV_VALUE
 import nltk
 nltk.download('averaged_perceptron_tagger_eng')
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    device = "cuda" 
+elif torch.xpu.is_available():
+    device = "xpu"
+else:
+    device = "cpu"
+
+print(f"Using device: {device}")
+
 
 
 def load_hifigan_vocoder(language: str, gender: str, device: str, dtype: str = "float32"):
@@ -112,7 +120,7 @@ class Text2SpeechApp:
         self.vocoder_model = {}
         self.fastspeech2_model = {}
         self.supported_genders = []
-        
+        assert dtype in ["bfloat16", "float32"], f"Unsupported dtype: {dtype}. Must be 'bfloat16' or 'float32'"
         self.preprocessor = TTSDurAlignPreprocessor()
 
         genders = ["male", "female"]
@@ -215,7 +223,10 @@ class Text2SpeechApp:
                 audio = y_g_hat.squeeze()
 
                 audio = audio * MAX_WAV_VALUE
-            
+            if audio.dtype == torch.bfloat16:
+                audio = audio.to(torch.float32)
+            if device in ["cuda", "xpu"]:
+                audio = audio.cpu()
             audio = audio.numpy().astype('int16')
             audio_arr.append(audio)
 
@@ -226,7 +237,7 @@ class Text2SpeechApp:
         return time_taken, output_file
     
 
-    def generate_audio_bytes(self, text: str, speaker_gender="male", save_file: bool = False):
+    def generate_audio_bytes(self, text: str, speaker_gender="male"):
             preprocessed_text, _ = self.preprocessor.preprocess(
                 text, self.lang, speaker_gender)
             preprocessed_text = " ".join(preprocessed_text)
@@ -264,7 +275,8 @@ class Text2SpeechApp:
 
                 if audio.dtype == torch.bfloat16:
                     audio = audio.to(torch.float32)
-                    
+                if device in ["cuda", "xpu"]:
+                    audio = audio.cpu()
                 audio = audio.numpy().astype('int16')
                 np.save(output_file, audio)
 
@@ -311,6 +323,7 @@ if __name__ == "__main__":
     parser.add_argument("--language", type=str, default="hindi", help="Language for TTS")
     parser.add_argument("--alpha", type=float, default=1.0, help="Alpha value for FastSpeech2 decoding")
     parser.add_argument("--dtype", type=str, default="float32", help="Data type for model inference")
+    parser.add_argument("--save_file", action="store_true", help="Save audio files to disk")
     args = parser.parse_args()
 
     batch_size = 1
@@ -326,7 +339,7 @@ if __name__ == "__main__":
         "जब हम निस्वार्थ भाव से दूसरों की मदद करते हैं, तब हमारे अपने जीवन में भी शांति और संतुलन अपने आप आ जाता है।"
     ]
 
-    total_time = tts.evaluate_performance(texts, save_file=True)
+    total_time = tts.evaluate_performance(texts, save_file=args.save_file)
     et = time.perf_counter()
     print(f"Total time for evaluating {len(texts)} sentences: {et - st:.2f} seconds")
     print(f"Average time per sentence: {(et - st)/len(texts):.2f} seconds")
