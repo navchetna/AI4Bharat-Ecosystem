@@ -24,6 +24,9 @@ from typing import List
 
 import nltk
 
+# Set a higher recompile limit for torch._dynamo to allow more aggressive optimizations during inference
+torch._dynamo.config.recompile_limit = 32
+
 nltk.download("averaged_perceptron_tagger_eng")
 
 if torch.cuda.is_available():
@@ -37,7 +40,12 @@ print(f"Using device: {device}")
 
 
 def load_hifigan_vocoder(
-    language: str, gender: str, device: str, dtype: str = "float32"
+    language: str,
+    gender: str,
+    device: str,
+    dtype: str = "float32",
+    compile: bool = False,
+    dynamic: bool = False,
 ):
     """
     Loads HiFi-GAN vocoder configuration file and generator model.
@@ -64,12 +72,20 @@ def load_hifigan_vocoder(
 
     if dtype == "bfloat16":
         generator = generator.to(torch.bfloat16)
+    if compile:
+        print(f"using torch.compile HiFi-GAN generator for inference")
+        generator = torch.compile(generator, dynamic=dynamic)
 
     return generator
 
 
 def load_fastspeech2_model(
-    language: str, gender: str, device: str, dtype: str = "float32"
+    language: str,
+    gender: str,
+    device: str,
+    dtype: str = "float32",
+    compile: bool = False,
+    dynamic: bool = False,
 ):
     """
     Loads FastSpeech2 model and updates its configuration with absolute paths.
@@ -117,16 +133,32 @@ def load_fastspeech2_model(
 
     if dtype == "bfloat16":
         model.model = model.model.to(torch.bfloat16)
+    # Move positional encoding tensors (.pe) to target device before compile.
+    # These are plain attributes (not buffers), so .to(device) doesn't move them.
+    for name, mod in model.model.tts.named_modules():
+        if hasattr(mod, "pe") and mod.pe is not None:
+            target_dtype = torch.bfloat16 if dtype == "bfloat16" else mod.pe.dtype
+            mod.pe = mod.pe.to(device=device, dtype=target_dtype)
+    if compile:
+        print(f"using torch.compile FastSpeech2 model for inference")
+        model.model.tts._forward = torch.compile(
+            model.model.tts._forward, dynamic=dynamic
+        )
     return model
 
 
-def split_into_chunks(text: str, words_per_chunk: int = 100):
+def split_into_chunks(text: str, words_per_chunk: int = 26):
     """Splits text into chunks of specified words_per_chunk."""
     words = text.split()
     chunks = [
         words[i : i + words_per_chunk] for i in range(0, len(words), words_per_chunk)
     ]
     return [" ".join(chunk) for chunk in chunks]
+
+
+# Pad mel-spectrograms to a bucket boundary for batching
+# so HiFi-GAN sees a fixed set of sizes and reuses oneDNN primitives.
+_VOC_BUCKETS = [128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096]
 
 
 class Text2SpeechApp:
@@ -136,13 +168,18 @@ class Text2SpeechApp:
         batch_size: str = 1,
         alpha: float = 1,
         dtype: str = "bfloat16",
+        compile: bool = False,
+        dynamic: bool = False,
     ):
         self.alpha = alpha
         self.lang = language
         self.dtype = dtype
+        self.batch_size = batch_size
         self.vocoder_model = {}
         self.fastspeech2_model = {}
         self.supported_genders = []
+        self.compile = compile
+        self.dynamic = dynamic
         assert dtype in [
             "bfloat16",
             "float32",
@@ -153,12 +190,22 @@ class Text2SpeechApp:
         for gender in genders:
             try:
                 self.vocoder_model[gender] = load_hifigan_vocoder(
-                    f"{language}_latest", gender, device, self.dtype
+                    f"{language}_latest",
+                    gender,
+                    device,
+                    self.dtype,
+                    compile=self.compile,
+                    dynamic=self.dynamic,
                 )
                 print(f"Loaded HiFi-GAN vocoder for {language}-{gender}")
 
                 self.fastspeech2_model[gender] = load_fastspeech2_model(
-                    f"{language}_latest", gender, device, self.dtype
+                    f"{language}_latest",
+                    gender,
+                    device,
+                    self.dtype,
+                    compile=self.compile,
+                    dynamic=self.dynamic,
                 )
                 print(f"Loaded FastSpeech2 model for {language}-{gender}")
                 self.supported_genders.append(gender)
@@ -170,6 +217,7 @@ class Text2SpeechApp:
                 print(
                     f"An unexpected error occurred while loading model for {language}-{gender}: {e}. This model key will not be available."
                 )
+
         self.warmup()
 
     def pre_print(self, print_str: str):
@@ -203,10 +251,23 @@ class Text2SpeechApp:
 
             print(f"Starting warmup for {lang}-{gender}")
             gender_start_time = time.time()
-            for i in range(2):  # Run twice; adjust as needed
-                print(f"Warmup iteration {i + 1} for {gender}")
-                time_taken, _ = self.warmup_specific_run(texts=text, speaker_gender=gender, save_file=True, out_dir=output_dir)
-                print(f"Iteration {i + 1} for {gender} completed in {time_taken:.2f} seconds")
+            WORD_LENGTH_BUCKET = [20, 25]
+            for i, words_per_chunk in enumerate(
+                WORD_LENGTH_BUCKET
+            ):  # Run twice; adjust as needed
+                print(
+                    f"Warmup iteration {i + 1} for {gender}, using chunks of {words_per_chunk} words"
+                )
+                start = time.time()
+                self.generate_batched_audio_bytes(
+                    [split_into_chunks(text, words_per_chunk=words_per_chunk)[0]]
+                    * self.batch_size,
+                    batch_size=self.batch_size,
+                )
+                time_taken = time.time() - start
+                print(
+                    f"Iteration {i + 1} for {gender} completed in {time_taken:.2f} seconds"
+                )
             gender_total_time = time.time() - gender_start_time
             print(f"Total warmup time for {gender}: {gender_total_time:.2f} seconds")
 
@@ -232,31 +293,6 @@ class Text2SpeechApp:
             audio = audio * MAX_WAV_VALUE
         return audio
 
-    def warmup_specific_run(
-        self,
-        texts: List[str] | str,
-        speaker_gender="male",
-        save_file: bool = False,
-        out_dir: str = "./outputs",
-        output_file: str = "result",
-    ):
-        start = time.time()
-        audio_arr = []
-        result_chunks = split_into_chunks(texts)
-        print(f"Total chunks to process: {len(result_chunks)}")
-        for chunk_text in result_chunks:
-            audio = self.generate_audio_bytes(chunk_text)
-            audio_arr.append(audio)
-        final_audio = torch.cat(audio_arr, dim=0)
-
-        if save_file:
-            self.save_to_file(
-                audio=final_audio, folder_path=out_dir, file_name=output_file
-            )
-        time_taken = time.time() - start
-
-        return time_taken, output_file
-
     def save_to_file(self, audio, folder_path, file_name):
         if audio.dtype == torch.bfloat16:
             audio = audio.to(torch.float32)
@@ -274,17 +310,24 @@ class Text2SpeechApp:
             write(f, SAMPLING_RATE, audio)
         print(f"Audio saved to {audio_file_path}")
 
-    def generate_batched_audio_bytes(self, texts: list, batch_size=1, speaker_gender="male"):
+    def generate_batched_audio_bytes(
+        self, texts: list, batch_size=1, speaker_gender="male"
+    ):
         print(f"\nTotal T2S to be done: {len(texts)}\n")
-        preprocessed_texts= []
+        preprocessed_texts = []
         for text in texts:
             preprocessed_text, _ = self.preprocessor.preprocess(
-                text, self.lang, speaker_gender)
+                text, self.lang, speaker_gender
+            )
             preprocessed_texts.append(" ".join(preprocessed_text))
         batched_audios = []
-        batched_texts = [preprocessed_texts[i:i+batch_size] for i in range(0, len(preprocessed_texts), batch_size)]
+        batched_texts = [
+            preprocessed_texts[i : i + batch_size]
+            for i in range(0, len(preprocessed_texts), batch_size)
+        ]
 
         for texts in batched_texts:
+            print(f"Current T2S to process: {len(texts)}\n")
             with torch.no_grad():
                 specific_model = self.fastspeech2_model[speaker_gender]
                 if batch_size == 1:
@@ -302,17 +345,30 @@ class Text2SpeechApp:
                     mel_spectrograms = []
                     mel_lengths = []
                     for i in range(len(out_batched["feat_gen_denorm"])):
-                        mel = out_batched["feat_gen_denorm"][i].T * 2.3262  # Shape: (160, time_steps)
+                        mel = (
+                            out_batched["feat_gen_denorm"][i].T * 2.3262
+                        )  # Shape: (160, time_steps)
                         mel_spectrograms.append(mel)
                         mel_lengths.append(mel.shape[1])
-                    # Pad mel-spectrograms to the same length for batching
                     max_length = max(mel_lengths)
+                    bucket_length = max_length
+                    # Pick the smallest bucket >= max_length (only when bucketing is enabled)
+                    if os.environ.get("VOCODER_BUCKET_INFER", "0") == "1":
+                        for b in _VOC_BUCKETS:
+                            if b >= max_length:
+                                bucket_length = b
+                                print(
+                                    f"Using bucket length {bucket_length} for max mel length {max_length}"
+                                )
+                                break
                     padded_mels = []
                     masks = []
                     for mel in mel_spectrograms:
-                        if mel.shape[1] < max_length:
-                            # Pad with zeros on the time dimension
-                            padding = torch.zeros((mel.shape[0], max_length - mel.shape[1]), device=mel.device)
+                        pad_amount = bucket_length - mel.shape[1]
+                        if pad_amount > 0:
+                            padding = torch.zeros(
+                                (mel.shape[0], pad_amount), device=mel.device
+                            )
                             mel = torch.cat([mel, padding], dim=1)
                         masks.append(mel.shape[1])
                         padded_mels.append(mel)
@@ -325,13 +381,16 @@ class Text2SpeechApp:
                         audio = y_g_hat[i].squeeze()
                         # Trim audio to match the original mel length (approximate audio length)
                         # Each mel frame corresponds to hop_size samples (typically 1024)
-                        audio_length = original_length * 1024  # Adjust hop_size if different
+                        audio_length = (
+                            original_length * 1024
+                        )  # Adjust hop_size if different
                         audio = audio[:audio_length]
                         audio = audio * MAX_WAV_VALUE
+                        print(audio)
                         batched_audios.append(audio)
-                
+
         return batched_audios
-    
+
     def evaluate_performance(
         self,
         texts: List[str],
@@ -339,7 +398,7 @@ class Text2SpeechApp:
         save_file: bool = False,
         out_dir: str = "./outputs",
     ):
-        audios =  self.generate_batched_audio_bytes(texts, batch_size=batch_size)
+        audios = self.generate_batched_audio_bytes(texts, batch_size=batch_size)
         if save_file:
             for idx, audio in enumerate(audios):
                 self.save_to_file(
@@ -349,20 +408,47 @@ class Text2SpeechApp:
                 )
 
 
-
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Text to Speech benchmarking")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for TTS inference")
-    parser.add_argument("--language", type=str, default="hindi", help="Language for TTS")
-    parser.add_argument("--alpha", type=float, default=1.0, help="Alpha value for FastSpeech2 decoding")
-    parser.add_argument("--dtype", type=str, default="float32", help="Data type for model inference")
-    parser.add_argument("--save_file", action="store_true", help="Save audio files to disk")
+    parser.add_argument(
+        "--batch_size", type=int, default=1, help="Batch size for TTS inference"
+    )
+    parser.add_argument(
+        "--language", type=str, default="hindi", help="Language for TTS"
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=1.0, help="Alpha value for FastSpeech2 decoding"
+    )
+    parser.add_argument(
+        "--dtype", type=str, default="float32", help="Data type for model inference"
+    )
+    parser.add_argument(
+        "--save_file", action="store_true", help="Save audio files to disk"
+    )
+    parser.add_argument(
+        "--compile", action="store_true", help="Compile model for faster inference"
+    )
+    parser.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="Enable dynamic shapes for model inference",
+    )
+    parser.add_argument(
+        "--profile", action="store_true", help="Enable Torch profiling for CPU and XPU"
+    )
     args = parser.parse_args()
     language = args.language
     alpha = args.alpha
-    tts = Text2SpeechApp(alpha=alpha, language=language, dtype=args.dtype)
+    tts = Text2SpeechApp(
+        alpha=alpha,
+        language=language,
+        dtype=args.dtype,
+        compile=args.compile,
+        dynamic=args.dynamic,
+        batch_size=args.batch_size,
+    )
     st = time.perf_counter()
     texts = [
         "जीवन में सफलता पाने के लिए केवल सपने देखना ही नहीं, बल्कि उन्हें पूरा करने के लिए निरंतर प्रयास और आत्मविश्वास भी ज़रूरी होता है।",
@@ -399,7 +485,49 @@ if __name__ == "__main__":
         "संगीत आत्मा का आहार है, जो हमारे मन को शांति और आनंद प्रदान करता है।",
     ]
 
-    tts.evaluate_performance(texts, batch_size=args.batch_size, save_file=args.save_file)
+    # Enable profiling if requested
+    if args.profile:
+        from torch.profiler import profile, ProfilerActivity
+
+        # Determine which activities to profile based on available hardware
+        activities = [ProfilerActivity.CPU]
+        if torch.xpu.is_available():
+            activities.append(ProfilerActivity.XPU)
+
+        # Generate timestamp for unique trace file names
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        trace_file = f"torch_trace_{timestamp}.json.gz"
+
+        print(f"\n{'='*60}")
+        print(
+            f"Torch Profiler enabled - Profiling activities: {[str(act) for act in activities]}"
+        )
+        print(f"Trace will be saved to: {trace_file} (gzip compressed)")
+        print(f"{'='*60}\n")
+
+        with profile(
+            activities=activities,
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False,
+        ) as prof:
+            tts.evaluate_performance(
+                texts, batch_size=args.batch_size, save_file=args.save_file
+            )
+
+        # Export as Chrome trace format with built-in gzip compression
+        prof.export_chrome_trace(trace_file)
+
+        print(f"\n{'='*60}")
+        print(f"Profiling complete! Trace saved to: {trace_file}")
+        print(f"The file is gzip compressed automatically by PyTorch profiler")
+        print(f"View with: chrome://tracing (Chrome can load .gz files directly)")
+        print(f"{'='*60}\n")
+    else:
+        tts.evaluate_performance(
+            texts, batch_size=args.batch_size, save_file=args.save_file
+        )
+
     et = time.perf_counter()
     print(
         f"Total time for evaluating {len(texts)} sentences: {(et - st)*1000:.0f} milliseconds"
