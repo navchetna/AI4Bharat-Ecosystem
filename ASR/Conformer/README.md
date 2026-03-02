@@ -14,7 +14,7 @@ uv pip install -r requirements.txt
 ## Benchmark
 ```
 python bench.py \
-    --model openai/whisper-large-v3 \
+    --model ai4bharat/indic-conformer-600m-multilingual \
     --dataset google/fleurs \
     --dataset_config hi_in \
     --split test \
@@ -25,3 +25,11 @@ python bench.py \
 ```
 
 NOTE - The model currently supports only batch size of 1 due to the backend code compiled for BS1. We are working on enabling support for larger batch sizes in the future.
+
+
+## Profiling
+1. Run the script to profile the code using pytorch profiler:
+    ```
+    python pt_profile.py --audio samples/hindi.wav --warmup 3 --active 1 --repeat 1 --output ./profiled_output --dtype bfloat16
+    ```
+
