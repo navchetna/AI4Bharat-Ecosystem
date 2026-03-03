@@ -1,5 +1,5 @@
 transformers 
-datasets 
 jiwer 
 librosa
 datasets==3.6.0
+onnxruntime
