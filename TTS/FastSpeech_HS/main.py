@@ -386,7 +386,6 @@ class Text2SpeechApp:
                         )  # Adjust hop_size if different
                         audio = audio[:audio_length]
                         audio = audio * MAX_WAV_VALUE
-                        print(audio)
                         batched_audios.append(audio)
 
         return batched_audios
