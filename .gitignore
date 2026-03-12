@@ -7,3 +7,6 @@ IndicTransToolkit/
 Fastspeech2_HS
 parler-tts
 torch_compile_debug
+assets/
+indic-conformer-600m-multilingual
+openvino_irs
